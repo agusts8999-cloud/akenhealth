@@ -1,0 +1,10 @@
+{
+  "tray_sha256": "0df8759e908c6f650f523e2d64b559869df498ea475df84057b383f610b9a998",
+  "backend": "wayland",
+  "gdk_display": "GdkWaylandDisplay",
+  "result": "PASS",
+  "autostart": true,
+  "persisted_deadline": true,
+  "overlay_count": 1,
+  "source_sha256": "864ed67764cf2dc2e8a721e3e7a78de4d6c1f4c9ec531c48fedce0f880908955"
+}

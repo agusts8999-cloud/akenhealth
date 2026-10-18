@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import threading
+import math
 
 ROOT = Path(os.environ.get('XDG_STATE_HOME', str(Path.home()/'.local/state')))/'coding-health-guard'
 DEFAULTS = dict(work=60, countdown=120, short=10, long=20, every=3, snooze=5, reminders=[8,10], hard=False)
@@ -38,7 +40,7 @@ class Timer:
         self.s=dict(phase='idle', deadline=0, sessions=0, day='', total=0, last=now(), warned=[])
         self.s.update(read(directory/'state.json', {}))
         self.s.setdefault('warned', [])
-        if not all(isinstance(self.s.get(k),(int,float)) and self.s[k]>=0 for k in ('deadline','sessions','total','last')) or not isinstance(self.s.get('warned'),list):
+        if not all(isinstance(self.s.get(k),(int,float)) and math.isfinite(self.s[k]) and self.s[k]>=0 for k in ('deadline','sessions','total','last')) or not isinstance(self.s.get('warned'),list):
             self.s=dict(phase='idle',deadline=0,sessions=0,day='',total=0,last=now(),warned=[])
         if self.s.get('phase') not in ('idle','work','countdown','break'): self.s['phase']='idle'
         self.persist()
@@ -79,12 +81,17 @@ def lock_session():
 
 def run_gui(timer):
     import gi
+    from gi.repository import GLib
+    GLib.set_prgname('coding-health-guard')
+    GLib.set_application_name('Coding Health Guard')
     gi.require_version('Gtk','3.0')
-    from gi.repository import Gtk, GLib, Gdk
+    from gi.repository import Gtk, GLib, Gdk, Gio
     class UI:
         def __init__(self):
             self.t=timer; self.overlays=[]; self.tray=None; self.lock_error=False
+            self.notices=[]; self.screen_proxy=None; self.lock_seen=False
             self.w=Gtk.Window(title='Coding Health Guard'); self.w.set_default_size(520,420)
+            self.w.set_icon_name('appointment-soon')
             self.w.connect('delete-event',self.close)
             box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12); box.set_border_width(24); self.w.add(box)
             title=Gtk.Label(); title.set_markup('<big><b>Coding Health Guard</b></big>'); box.pack_start(title,False,False,0)
@@ -94,16 +101,23 @@ def run_gui(timer):
             for text,fn in [('Mulai — sudah istirahat',self.start),('Belum istirahat',self.rest),('Lanjut sesi',self.resume),('Tunda',self.snooze),('Lewati istirahat',self.skip),('Pengaturan',self.settings),('Sembunyikan',lambda:self.w.hide())]:
                 b=Gtk.Button(label=text); b.connect('clicked',lambda _,f=fn:f()); box.pack_start(b,False,False,0); self.buttons[text]=b
             self.setup_tray(); self.w.show_all()
+            display=Gdk.Display.get_default()
+            self.is_wayland='Wayland' in display.__gtype__.name
+            display.connect('monitor-added',self.monitors_changed)
+            display.connect('monitor-removed',self.monitors_changed)
+            try:
+                self.screen_proxy=Gio.DBusProxy.new_for_bus_sync(
+                    Gio.BusType.SESSION, Gio.DBusProxyFlags.DO_NOT_AUTO_START,
+                    None, 'org.gnome.ScreenSaver','/org/gnome/ScreenSaver',
+                    'org.gnome.ScreenSaver',None)
+                self.screen_proxy.connect('g-signal',self.screen_signal)
+            except GLib.Error: pass
             GLib.timeout_add_seconds(1,self.tick); self.tick()
         def setup_tray(self):
             try:
-                gi.require_version('AyatanaAppIndicator3','0.1')
-                from gi.repository import AyatanaAppIndicator3 as A
-                self.tray=A.Indicator.new('coding-health-guard','appointment-soon',A.IndicatorCategory.APPLICATION_STATUS)
-                menu=Gtk.Menu()
-                item=Gtk.MenuItem(label='Buka Coding Health Guard'); item.connect('activate',lambda _:self.w.present()); menu.append(item)
-                menu.show_all(); self.tray.set_menu(menu); self.tray.set_status(A.IndicatorStatus.ACTIVE)
-            except (ImportError,ValueError): pass
+                from tray import Tray
+                self.tray=Tray(lambda:self.w.present())
+            except (ImportError,GLib.Error): pass
         def close(self,*_):
             self.w.hide(); return True
         def start(self):
@@ -120,19 +134,59 @@ def run_gui(timer):
             self.w.present()
             if self.t.config['hard']:
                 self.make_overlays()
-                self.lock_error=not lock_session()
+                self.lock_seen=False; self.lock_error=False
+                def request():
+                    ok=lock_session()
+                    GLib.idle_add(self.lock_requested,ok)
+                threading.Thread(target=request,daemon=True).start()
+        def lock_requested(self,ok):
+            if self.t.s['phase']!='break': return False
+            self.lock_error=not ok
+            if ok: GLib.timeout_add_seconds(3,self.verify_lock)
+            return False
+        def verify_lock(self):
+            if self.t.s['phase']!='break' or self.lock_seen: return False
+            if self.screen_proxy:
+                self.screen_proxy.call('GetActive',None,Gio.DBusCallFlags.NONE,1500,None,self.lock_checked)
+            else: self.lock_error=True
+            return False
+        def lock_checked(self,proxy,result):
+            try: active=proxy.call_finish(result).unpack()[0]
+            except GLib.Error: active=False
+            if self.t.s['phase']=='break' and not self.lock_seen: self.lock_error=not active
+        def screen_signal(self,proxy,sender,name,parameters):
+            if name!='ActiveChanged': return
+            active=parameters.unpack()[0]
+            if active: self.lock_seen=True
+            elif self.t.s['phase']=='break' and self.t.config['hard']:
+                GLib.timeout_add(500,self.present_overlays)
+        def present_overlays(self):
+            if self.t.s['phase']=='break' and self.t.config['hard']:
+                self.make_overlays()
+                for window,_ in self.overlays: window.show_all(); window.present()
+            return False
+        def monitors_changed(self,*_):
+            for window,_ in self.overlays: window.destroy()
+            self.overlays=[]
+            self.present_overlays()
         def make_overlays(self):
             if self.overlays: return
             display=Gdk.Display.get_default()
             for i in range(display.get_n_monitors()):
-                w=Gtk.Window(title='Waktunya istirahat'); w.set_decorated(False); w.set_keep_above(True)
+                w=Gtk.Window(title='Waktunya istirahat'); w.set_decorated(False)
+                if not self.is_wayland: w.set_keep_above(True)
+                w.set_accept_focus(True)
                 w.connect('delete-event',lambda *_:True)
                 box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=24); box.set_border_width(48); w.add(box)
+                box.set_can_focus(True)
                 label=Gtk.Label(); box.pack_start(label,True,True,0)
-                hint=Gtk.Label(label='Pemulihan darurat: tahan Ctrl+Shift+Esc selama 5 detik.'); box.pack_start(hint,False,False,0)
+                hint=Gtk.Label(label='Pemulihan darurat: klik layar ini, lalu tahan Ctrl+Shift+Esc selama 5 detik.'); box.pack_start(hint,False,False,0)
                 w.connect('key-press-event',self.emergency_key); w.connect('key-release-event',self.emergency_release)
                 w.connect('focus-out-event',self.emergency_release)
-                w.show_all(); w.fullscreen_on_monitor(w.get_screen(),i); self.overlays.append((w,label))
+                w.show_all()
+                if self.is_wayland: w.maximize()
+                else: w.fullscreen_on_monitor(w.get_screen(),i)
+                box.grab_focus(); w.present(); self.overlays.append((w,label))
         def emergency_key(self,w,e):
             mask=Gdk.ModifierType.CONTROL_MASK|Gdk.ModifierType.SHIFT_MASK
             if e.keyval==Gdk.KEY_Escape and e.state&mask==mask:
@@ -151,23 +205,37 @@ def run_gui(timer):
             rem=Gtk.Entry(); rem.set_text(','.join(map(str,self.t.config['reminders']))); box.add(Gtk.Label(label='Pengingat jam coding harian (pisahkan koma)')); box.add(rem)
             hard=Gtk.CheckButton(label='Mode keras — tanpa lewati/tunda; kunci Ubuntu'); hard.set_active(self.t.config['hard']); box.add(hard)
             d.show_all()
-            if d.run()==Gtk.ResponseType.OK:
-                try:
-                    hours=[float(x.strip()) for x in rem.get_text().split(',')]
-                    if not hours or any(not 0<h<=24 for h in hours): raise ValueError()
-                    self.t.config.update({k:v.get_value_as_int() for k,v in fields.items()}); self.t.config.update(hard=hard.get_active(),reminders=hours)
-                    save(self.t.root/'config.json',self.t.config)
-                except ValueError: self.message('Pengingat tidak valid. Gunakan angka lebih dari 0 hingga 24. Perubahan dibatalkan.')
-            d.destroy(); self.tick()
+            def respond(dialog,response):
+                if response==Gtk.ResponseType.OK:
+                    try:
+                        hours=[float(x.strip()) for x in rem.get_text().split(',')]
+                        if not hours or any(not 0<h<=24 for h in hours): raise ValueError()
+                        if self.t.config['hard'] and self.t.s['phase']!='idle':
+                            self.message('Pengaturan dikunci selama sesi mode keras aktif.')
+                        else:
+                            self.t.config.update({k:v.get_value_as_int() for k,v in fields.items()})
+                            self.t.config.update(hard=hard.get_active(),reminders=hours)
+                            save(self.t.root/'config.json',self.t.config)
+                    except ValueError: self.message('Pengingat tidak valid. Gunakan angka lebih dari 0 hingga 24. Perubahan dibatalkan.')
+                dialog.destroy(); self.tick()
+            d.connect('response',respond)
         def message(self,text):
-            d=Gtk.MessageDialog(transient_for=self.w,flags=0,message_type=Gtk.MessageType.INFO,buttons=Gtk.ButtonsType.OK,text=text); d.run(); d.destroy()
+            d=Gtk.MessageDialog(transient_for=self.w,flags=0,message_type=Gtk.MessageType.INFO,buttons=Gtk.ButtonsType.OK,text=text)
+            self.notices.append(d)
+            def dismiss(dialog,*_):
+                if dialog in self.notices: self.notices.remove(dialog)
+                dialog.destroy()
+            d.connect('response',dismiss); d.show_all()
         def tick(self):
             if (self.t.root/'show').exists():
                 (self.t.root/'show').unlink(missing_ok=True); self.w.show_all(); self.w.present()
             if (self.t.root/'recover').exists():
                 (self.t.root/'recover').unlink(missing_ok=True); self.t.s.update(phase='idle',deadline=0); self.t.persist(); Gtk.main_quit(); return False
             event=self.t.tick(); phase=self.t.s['phase']; hard=self.t.config['hard']
-            if event=='break': self.enter_rest()
+            if event=='break':
+                for notice in self.notices: notice.destroy()
+                self.notices=[]
+                self.enter_rest()
             if phase=='break' and hard: self.make_overlays()
             if phase!='break':
                 for w,_ in self.overlays: w.destroy()

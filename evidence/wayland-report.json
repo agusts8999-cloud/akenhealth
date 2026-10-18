@@ -1,0 +1,28 @@
+{
+  "tray_sha256": "0df8759e908c6f650f523e2d64b559869df498ea475df84057b383f610b9a998",
+  "backend": "wayland",
+  "gdk_display": "GdkWaylandDisplay",
+  "gnome": "GNOME Shell 46.0",
+  "source_sha256": "864ed67764cf2dc2e8a721e3e7a78de4d6c1f4c9ec531c48fedce0f880908955",
+  "checks": [
+    "launcher and Indonesian startup choices",
+    "GUI saves configurable durations and daily reminders",
+    "system tray registers Coding Health Guard with GNOME AppIndicator",
+    "tray menu layout and open action work",
+    "start coding from GUI",
+    "relaunch activates existing hidden window",
+    "CLI recovery exits and resets timer",
+    "standard countdown and snooze",
+    "standard skip break",
+    "real GNOME terminal and VS Code opened",
+    "hard mode hides skip/snooze and disables settings",
+    "native GNOME lock confirmed by GetActive and logind LockedHint",
+    "password unlock returns to active break overlay",
+    "tray registers again after GNOME unlock",
+    "break completes, overlays close, terminal child and VS Code survive",
+    "resumed break persists without relocking desktop",
+    "real keyboard Ctrl+Shift+Esc held 5 seconds recovers",
+    "uninstall removes desktop autostart"
+  ],
+  "result": "PASS"
+}

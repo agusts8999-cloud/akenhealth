@@ -15,6 +15,9 @@ class Tests(unittest.TestCase):
     def test_partial_state(self):
         (self.root/'state.json').write_text('{"deadline": 1}')
         Timer(self.root).tick()
+    def test_nonfinite_state(self):
+        (self.root/'state.json').write_text('{"deadline": Infinity, "sessions": NaN}')
+        t=Timer(self.root); self.assertEqual(t.s['phase'],'idle'); self.assertEqual(t.s['deadline'],0)
     def test_cycle(self):
         self.t.begin(); self.now+=3600
         self.assertEqual(self.t.tick(),'countdown')

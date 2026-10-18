@@ -1,0 +1,7 @@
+{
+  "backend": "wayland",
+  "cycles": 12,
+  "result": "PASS",
+  "errors": [],
+  "source_sha256": "864ed67764cf2dc2e8a721e3e7a78de4d6c1f4c9ec531c48fedce0f880908955"
+}

@@ -9,7 +9,7 @@ if ! /usr/bin/python3 -c 'import gi; gi.require_version("Gtk","3.0")' 2>/dev/nul
 fi
 base="$HOME/.local/share/coding-health-guard"
 mkdir -p "$base" "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.config/autostart"
-install -m 644 guard.py README.md "$base/"
+install -m 644 guard.py tray.py README.md "$base/"
 install -m 755 uninstall.sh "$base/"
 cat > "$HOME/.local/bin/coding-health-guard" <<'EOF'
 #!/bin/sh
@@ -25,4 +25,4 @@ exe=exe.replace('\\','\\\\').replace('"','\\"').replace('`','\\`').replace('$','
 text='[Desktop Entry]\nType=Application\nName=Coding Health Guard\nComment=Pengingat istirahat coding\nExec="'+exe+'"\nIcon=appointment-soon\nTerminal=false\nCategories=Utility;\nX-GNOME-Autostart-enabled=true\n'
 for p in (home/'.local/share/applications/coding-health-guard.desktop',home/'.config/autostart/coding-health-guard.desktop'): p.write_text(text)
 EOF
-printf '%s\n' 'Terpasang. Buka Coding Health Guard dari menu aplikasi atau login desktop berikutnya.' 'Tray opsional: sudo apt install gir1.2-ayatanaappindicator3-0.1 (GNOME perlu ekstensi AppIndicator aktif).'
+printf '%s\n' 'Terpasang. Buka Coding Health Guard dari menu aplikasi atau login desktop berikutnya.' 'Tray GNOME: aktifkan ekstensi AppIndicator bila tersedia; tanpa tray buka launcher kembali.'
